@@ -9,9 +9,16 @@ import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.layers import Input, Conv2D, MaxPool2D, BatchNormalization, Activation, Add, ZeroPadding2D,AveragePooling2D
 from tensorflow.keras.preprocessing.image import load_img,img_to_array
+from tensorflow.keras.losses import SparseCategoricalCrossentropy, Huber, BinaryCrossentropy
 
 import matplotlib.colors as mcolors
 import random
+
+## CONSTANTS
+
+BASE_ANCHOR_BOX_SIZE = [128, 128]
+ANCHOR_BOX_RATIOS = [0.25, 0.5, 1, 1.5]
+ANCHOR_BOX_SCALES = [1, 2, 3, 4, 6]
 
 # Function to get the number of anchor points in the feature map
 
@@ -56,7 +63,7 @@ def calculate_anchor_stride(original_size, feature_map_size):
 
     Returns
     ----------
-    int
+    stride: int
         Stride value.
     """
     return original_size // feature_map_size
@@ -114,7 +121,7 @@ def create_aspect_boxes(anchor_box_ratios, anchor_box_scales, base_anchor_box):
     ----------
     aspect_box
         List of anchor boxes with different scales and aspect ratios for each anchor point
-    ----------
+
     """
 
     aspect_box = []
@@ -358,7 +365,7 @@ def convert_bounding_box_format(anchor_boxes):
 
 # Function to assign a positive or negative labels, for each ground truth box and anchor box combo
 
-def assign_object_label(iou_scores_tensor,IOU_FOREGROUND_THRESH = 0.7,IOU_BACKGROUND_THRESH = 0.4,FEATURE_MAP_WIDTH= 50,FEATURE_MAP_HEIGHT= 50,NUM_OF_ANCHORS_PER_PIXEL= 9):
+def assign_object_label(iou_scores_tensor,IOU_FOREGROUND_THRESH = 0.3,IOU_BACKGROUND_THRESH = 0.1,FEATURE_MAP_WIDTH= 50,FEATURE_MAP_HEIGHT= 50,NUM_OF_ANCHORS_PER_PIXEL= 20):
     """
     Assign Object Labels If They Are Foreground (Object) or Background
 
@@ -529,7 +536,7 @@ def calculate_objectness_loss(predicted_scores,target_object_labels):
     # mask = tf.cast(boolean_mask_matrix,dtype=tf.int32)
     # retained_labels = target_object_labels * mask
     retained_labels = tf.where(target_object_labels == -1, tf.zeros_like(target_object_labels), target_object_labels)
-    binary_cross_entropy = tf.keras.losses.BinaryCrossentropy()
+    binary_cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     objectness_loss = binary_cross_entropy(retained_labels,predicted_scores)
 
     return objectness_loss
@@ -825,9 +832,9 @@ def calculate_rpn_loss(anchor_boxes,offsets,gt_boxes,iou_matrix,object_labels,ob
 
     # Calculate the normalizing terms
     n_cls = tf.maximum(num_positive_anchor_boxes + num_negative_anchor_boxes, 1e-6)
-    n_reg = tf.maximum(num_positive_anchor_boxes, 1e-6)
+    n_reg = tf.maximum(num_positive_anchor_boxes, 1)
 
-    objectness_loss = calculate_objectness_loss(objectness_scores[...,1],object_labels)
+    objectness_loss = calculate_objectness_loss(objectness_scores,object_labels)
     regression_loss = calculate_bounding_box_regression_loss(anchor_boxes,offsets,gt_boxes,iou_matrix,object_labels,anchor_scaling_stride = anchor_scaling_stride)
     # Calculate the total loss based on the paper
     total_loss =  ((1/n_cls) * (objectness_loss)) + (lambda_ * (1/n_reg) * regression_loss) 
@@ -1062,7 +1069,18 @@ def assign_roi_to_ground_truth_box(ground_truth_boxes,roi_coordinates,ground_tru
     roi_labels = tf.gather(ground_truth_labels,best_gt_box_for_each_anchor_box,batch_dims=1)
 
     # Applying IoU thresholding and making it a background if less than threshold
-    roi_labels = tf.where(max_iou_per_anchor_box >= 0.5, roi_labels, tf.zeros_like(roi_labels))
+    # roi_labels = tf.where(max_iou_per_anchor_box >= 0.5, roi_labels, tf.zeros_like(roi_labels))
+    
+    roi_labels = tf.where(max_iou_per_anchor_box >= 0.5, roi_labels, tf.constant(-1, dtype=roi_labels.dtype))
+    roi_labels = tf.where(max_iou_per_anchor_box < 0.1, tf.zeros_like(roi_labels), roi_labels)
+    
+    if tf.reduce_sum(tf.cast(roi_labels > 0, tf.int32)) == 0:
+        tf.print("⚠️ Warning: All RoIs are background for this sample.")
+    
+    num_fg = tf.reduce_sum(tf.cast(roi_labels > 0, tf.int32))
+    tf.print("Foreground RoIs in batch:", num_fg)
+    
+
     
     return roi_labels, best_gt_box_for_each_anchor_box, max_iou_per_anchor_box
 
@@ -1135,6 +1153,330 @@ def calculate_bounding_box_deltas_between_roi_and_ground_truth_box(ground_truth_
     valid_roi_labels = tf.boolean_mask(flattened_roi_labels,valid_mask)
     
     return filtered_t_offsets,valid_roi_labels
+
+
+def calculate_roi_head_regression_loss(t_star,regression_head,roi_labels, number_of_classes):
+    """
+    Calculates the regression loss between the t_star calculated and the predicted values from RoI Head Regression head.
+    
+    Parameters:
+    ---------
+    t_star : Tensor
+        Tensor of filtered calculated offsets (t_star) for the foreground RoI's in the shape of (NUM_FOREGROUND_ROIs,4)
+
+    regression_head: Tensor
+        Tensor of predicted regression offsets by the RoI Head (NUM_ROIs,NUM_OF_CLASSES*4)
+
+    roi_labels : Tensor
+        Tensor of filtered RoI Labels for the foreground RoI's in the shape of (NUM_FOREGROUND_ROIs,)
+
+    number_of_classes: Int
+        Number of classes in the RoI Head
+
+    Returns:
+    -------
+    deltas_loss: Float
+        RoI bounding box delta loss value
+    """
+    # Reshape the regression head output
+    flattened_regression_head = tf.reshape(regression_head, [-1, number_of_classes, 4])
+
+    # If there is no foreground object
+    if tf.shape(t_star)[0] == 0:
+        return tf.constant(0.0, dtype=tf.float32)
+
+    # Calculating the coordinate indices to select the right class for each RoI
+    index = tf.range(t_star.shape[0],dtype=tf.int32)
+
+    # Stack the indices together for selecting the right class deltas
+    stacked_roi_indices = tf.stack([index,roi_labels],axis=1)
+
+    # Getting the RoI deltas for the correct class
+    regression_deltas_for_each_roi_according_to_class = tf.gather_nd(flattened_regression_head,stacked_roi_indices)
+
+    # Now calculating the loss between the RoI Head and the t* offsets
+    roi_delta_loss = Huber(delta=1.0)
+    deltas_loss = roi_delta_loss(t_star,regression_deltas_for_each_roi_according_to_class)
+    
+
+    return deltas_loss
+
+def roi_pooling_inference(feature_map,roi_boxes,roi_batch_indices,output_size = (7,7)):
+    """
+    RoI pooling for inference
+    
+    Parameters:
+    ---------
+    feature_map: Tensor
+        Feature Map from the RPN (B,FEATURE_MAP_WIDTH,FEATURE_MAP_HEIGHT,CHANNELS)
+
+    roi_boxes : Tensor
+        Tensor of predicted RoI boxes
+
+    roi_batch_indices : Tensor
+        Batch indices for RoI's
+
+    output_size: (int,int)
+        Output grid RoI size (Row,Col)
+        
+    Returns:
+    -------
+    roi: Tensor
+        RoI's in the cropped and resized shape of (NUM_ROI,GRID_ROW_SIZE,GRID_COL_SIZE,CHANNELS)
+    """
+    feature_map_width = tf.cast(feature_map.shape[1],tf.float32)
+    feature_map_height = tf.cast(feature_map.shape[2],tf.float32)
+
+    # Normalizing the box coordinates
+    x_min,y_min,x_max,y_max = tf.split(roi_boxes,num_or_size_splits = 4,axis=-1)
+    
+    x_min_normalized = x_min/feature_map_width
+    y_min_normalized = y_min/feature_map_height
+    x_max_normalized = x_max/feature_map_width
+    y_max_normalized = y_max/feature_map_height
+
+    # Stacking the coordinates together
+    normalized_boxes = tf.concat([y_min_normalized, x_min_normalized, y_max_normalized, x_max_normalized],axis=-1)
+
+    return tf.image.crop_and_resize(feature_map,normalized_boxes,tf.cast(roi_batch_indices,tf.int32),output_size)
+    
+def refine_region_of_interests_inference(anchor_boxes,offsets,feature_map_width = 50, feature_map_height = 50):
+    """
+    Calculates the Region of Interests (RoI) for the positive anchor boxes so that they can be then used in the RoI pooling during inference.
+    
+    Parameters:
+    ---------
+    anchor_boxes: Tensor
+        Tensor of the positive anchor boxes in the batch in the shape of (NUM_POSITIVE_ANCHORS_BOXES,4)
+
+    offsets: Tensor
+        Tensor of the offsets for the positive anchor boxes in the shape of (NUM_POSITIVE_ANCHOR_BOXES,4)
+
+    feature_map_width : Int
+        The width of the feature map coordinate space (default= 50)
+
+    feature_map_height : Int
+        The height of the feature map coordinate space (default = 50)
+        
+    Returns:
+    -------
+    roi_proposals: Tesnor
+        ROI Proposals that are created by adding the anchor boxes and their refinements in the shape (NUM_POSITIVE_ANCHOR_BOXES,4)
+    """ 
+
+    # Convert the bounding boxes from (X_MIN,Y_MIN,X_MAX,Y_MAX) to (Xc,Yc,W,H)
+    converted_anchor_boxes = convert_xy_boxes_to_center_format(anchor_boxes)
+    
+    # Take the anchor boxes and add the offsets to them to calculate the actual ROI in feature map space
+    x_c,y_c,w,h = tf.split(converted_anchor_boxes,num_or_size_splits=4,axis=-1)
+    t_xc,t_yc,t_w,t_h = tf.split(offsets,num_or_size_splits=4,axis=-1)
+
+    # Adding them anchor boxes with the offsets in the opposite way while calulating the differences in the offsets according to the paper.
+    roi_xc = x_c + (t_xc * w)
+    roi_yc = y_c + (t_yc * h)
+    roi_w = tf.exp(t_w) * w
+    roi_h = tf.exp(t_h) * h
+
+    roi_proposals = tf.concat([roi_xc,roi_yc,roi_w,roi_h],axis=-1) # Concat them to create them to box coordinates
+
+    return roi_proposals     # Created the RoI's, they need to be clipped when converting to the xy-coordinate system
+
+def filter_foreground_predictions(top_proposals_flattened,classification_score,regression_head,final_labels,num_classes):
+    """
+    Filters the foreground predictions from the top-k predictions
+    
+    Parameters:
+    ---------
+    top_proposals_flattened: Tensor
+        Tensor of the top-k predictions in the shape of (K,4)
+
+    classification_score: Tensor
+        Tensor of the classification scores from the RoI Head (NUM_RoIs,NUM_CLASSES)
+
+    regression_head : Tensor
+        Regression head predictions from the RoI Head (NUM_RoIs, NUM_CLASSES * 4)
+
+    final_labels : Tensor
+        Tensor of Predicted labels for the RoIs indicating the class labels (NUM_RoIs,1)
+
+    num_classes: Int
+        Number of classes in the RoI Head
+        
+    Returns:
+    -------
+    foreground_proposals: Tensor
+        Foreground proposals where predictions are not the background class (0)
+
+    foreground_scores: Tensor
+        Foreground scores by the RoI Head
+
+    foreground_labels: Tensor
+        Labels for the foreground proposals
+
+    foreground_offsets_filtered: Tensor
+        Offsets for the foreground proposals filtered
+    """ 
+    # Filtering out background
+    foreground_mask = tf.where(final_labels > 0)
+
+    # Filtering out the top proposals to the foreground ones only
+    foreground_proposals = tf.gather_nd(top_proposals_flattened,foreground_mask)
+
+    # Filtering out the background labels
+    foreground_labels = tf.gather_nd(final_labels,foreground_mask)
+
+    # Filtering out the classification scores
+    indices = tf.stack([tf.range(tf.shape(foreground_labels)[0], dtype=tf.int64), foreground_labels], axis=1)
+    foreground_scores = tf.gather_nd(classification_score, indices)
+
+    # Filtering out the regression offsets to foreground classes
+    foreground_offsets = tf.gather_nd(regression_head,foreground_mask)
+
+    # Need to get the corresponding offsets for the classes
+    # Reshaping regression offsets to per class for better selection
+    foreground_offsets_reshaped = tf.reshape(regression_head,[regression_head.shape[0],num_classes,4])
+
+    # Need to apply the offsets to the proposals
+    # Class 0 -> [0:4]
+    # Class 1 -> [4:8]
+
+    N = foreground_offsets.shape[0] # Getting this for looping using tf.range
+
+    indices = tf.range(N,dtype=tf.int64)
+
+    # Stacking the indices for each class
+    stacked_foreground_indices = tf.stack([indices,foreground_labels],axis=1)
+
+    # Gathering the foreground offsets
+    foreground_offsets_filtered = tf.gather_nd(foreground_offsets_reshaped,stacked_foreground_indices)
+
+    return foreground_proposals,foreground_scores,foreground_labels,foreground_offsets_filtered
+
+
+def apply_bounding_box_deltas(proposals,deltas,image_size = (800,800)):
+    """
+    Apply the deltas to the bounding box based on the paper
+
+    Parameters:
+    ---------
+    proposals: Tensor
+        Tensor of proposals
+
+    deltas: Tensor
+        Tensor of all the bounding box deltas
+
+    Returns:
+    -------
+    adjusted_foreground_proposals: Tensor
+        Tensor of all the proposals with their offsets added to them
+    """
+    # Split the proposal coordinates (xc,yc,w,h)
+    x_c,y_c,w,h = tf.split(proposals, num_or_size_splits = 4,axis = -1) # Splitting the foreground proposal coordinates
+
+    t_x,t_y,t_w,t_h = tf.split(deltas, num_or_size_splits = 4,axis = -1) # Splitting the foreground offset coordinates
+
+    x_p = (t_x * w) + x_c
+    y_p = (t_y * h) + y_c
+    w_p = tf.math.exp(t_w) * w
+    h_p = tf.math.exp(t_h) * h
+
+    x1 = x_p - 0.5 * w_p
+    y1 = y_p - 0.5 * h_p
+    x2 = x_p + 0.5 * w_p
+    y2 = y_p + 0.5 * h_p
+    
+    # Clipping the coordinates to ensure they are within the image bounds
+    x1 = tf.clip_by_value(x1, 0,image_size[0])
+    y1 = tf.clip_by_value(y1, 0,image_size[1])
+    x2 = tf.clip_by_value(x2, 0,image_size[0])
+    y2 = tf.clip_by_value(y2, 0,image_size[1])
+
+    adjusted_foreground_proposals = tf.concat([x1,y1,x2,y2],axis=-1)
+
+    return adjusted_foreground_proposals
+    
+    
+def inference_filter_top_k(proposals_flattened,objectness_scores,top_k = 300):
+    """
+    Selects the top K region proposals per image based on foreground objectness scores.
+
+    Parameters:
+    ----------
+    proposals_flattened : tf.Tensor
+        Tensor of shape [B, N, 4] containing all proposals per image in the batch,
+        where B is the batch size and N is the number of proposals per image.
+
+    objectness_scores : tf.Tensor
+        Tensor of shape [B, H, W, A, 2], where the last dimension contains the
+        background and foreground probabilities for each anchor. Only the foreground
+        scores (index 1) are used for filtering.
+
+    top_k : int, optional (default=300)
+        Number of top proposals to select per image based on foreground objectness scores.
+
+    Returns:
+    -------
+    top_proposals_flattened : tf.Tensor
+        Tensor of shape [B * top_k, 4] containing the top proposals across the batch.
+
+    top_indices_flattened : tf.Tensor
+        Tensor of shape [B * top_k, 2], where each entry contains (batch_index, proposal_index)
+        for the corresponding proposal in `top_proposals_flattened`.
+    """
+
+    B = objectness_scores.shape[0]
+
+    # Extracting the foreground probabilities from the objectness scores and flattening them
+    object_scores_flattened = tf.reshape(objectness_scores[...,0],[B,-1])
+
+    # Selecting the top k 
+    top_k_scores, top_k_indices = tf.math.top_k(object_scores_flattened, k= top_k)
+
+    # Gathering the corresponding proposals from the flattened proposals
+    batch_indices = tf.range(B)[:,tf.newaxis]
+
+    # Repeating the indices for the k indices
+    batch_indices = tf.tile(batch_indices,[1,top_k])
+
+    # Stacking the top k indices into the tiled indices
+    top_indices = tf.stack([batch_indices,top_k_indices],axis=-1)
+
+    # Gathering the top proposals
+    top_proposals = tf.gather_nd(proposals_flattened,top_indices)
+
+    # Flattening the top proposals for RoI pooling
+    top_proposals_flattened = tf.reshape(top_proposals,[-1,4])
+
+    # Flattening the top indices 
+    top_indices_flattened = tf.reshape(top_indices,[-1,2])
+
+    return top_proposals_flattened , top_indices_flattened
+
+
+def sample_rois_per_image(bboxes,labels,deltas, roi_blocks, num_rois = 256, fg_fraction = 0.25):
+    
+    tf.print("Labels Shape:", tf.shape(labels))
+    tf.print("BBoxes Shape:", tf.shape(bboxes))
+    tf.print("Deltas Shape:", tf.shape(deltas))
+    
+    tf.print("Labels:", labels)
+    tf.print("BBoxes:", bboxes)
+    tf.print("Deltas:", deltas)
+    
+    fg_indices = tf.where(labels > 0)[:,0]  # Indices of foreground boxes
+    bg_indices = tf.where(labels == 0)[:,0]  # Indices of background boxes
+    
+    num_of_fg_boxes = tf.minimum(tf.size(fg_indices), int(num_rois * fg_fraction)) # Number of foreground boxes to sample
+    num_of_bg_boxes = tf.minimum(tf.size(bg_indices), num_rois - num_of_fg_boxes) # Number of background boxes to sample
+    
+    # Randomly sample foreground and background indices
+    fg_sampled_indices = tf.random.shuffle(fg_indices)[:num_of_fg_boxes]
+    bg_sampled_indices = tf.random.shuffle(bg_indices)[:num_of_bg_boxes]
+    
+    sampled_indices = tf.concat([fg_sampled_indices, bg_sampled_indices], axis=0)  # Combine indices
+    
+    return tf.gather(bboxes, sampled_indices), tf.gather(labels, sampled_indices), tf.gather(deltas, sampled_indices), tf.gather(roi_blocks, sampled_indices)
+
 
 """========================================================================================================================================="""
 
