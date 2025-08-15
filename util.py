@@ -535,9 +535,22 @@ def calculate_objectness_loss(predicted_scores,target_object_labels):
     # boolean_mask_matrix = target_object_labels != -1
     # mask = tf.cast(boolean_mask_matrix,dtype=tf.int32)
     # retained_labels = target_object_labels * mask
-    retained_labels = tf.where(target_object_labels == -1, tf.zeros_like(target_object_labels), target_object_labels)
-    binary_cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    objectness_loss = binary_cross_entropy(retained_labels,predicted_scores)
+    # retained_labels = tf.where(target_object_labels == -1, tf.zeros_like(target_object_labels), target_object_labels)
+    # binary_cross_entropy = tf.keras.losses.BinaryCrossentropy()
+    # objectness_loss = binary_cross_entropy(retained_labels,predicted_scores)
+
+    pred_scores = tf.reshape(predicted_scores,[-1])
+    object_labels = tf.reshape(target_object_labels,[-1])
+
+    # Filter out the ones where its -1 to stop the loss function from penalizing the ignored boxes
+    # by forcing them into background
+    valid_mask = tf.not_equal(object_labels,-1)
+    pos_pred_scores = tf.boolean_mask(pred_scores,valid_mask)
+    pos_target_labels = tf.boolean_mask(object_labels,valid_mask)
+    pos_target_labels = tf.cast(pos_target_labels,dtype=tf.float32)
+
+    # Calculate the loss now with the valid scores
+    objectness_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels = pos_target_labels,logits=pos_pred_scores))
 
     return objectness_loss
 
@@ -759,7 +772,7 @@ def calculate_bounding_box_regression_loss(anchor_boxes,offsets,gt_boxes,iou_mat
         Tensor of the predicted offsets (B,FEATURE_MAP_WIDTH,FEATURE_MAP_HEIGHT,NUM_ANCHORS,4)
 
     gt_boxes: Tensor
-        Tensor of the ground truth boxes (B,FEATURE_MAP_WIDTH,FEATURE_MAP_HEIGHT,NUM_ANCHORS,4)
+        Tensor of the ground truth boxes (B,NUM_GT_BOXES,4)
 
     iou_matrix: Tensor
         Tensor of the IoU values for the anchor boxes (B,GT_BOXES,NUM_TOTAL_ANCHORS)
@@ -779,18 +792,18 @@ def calculate_bounding_box_regression_loss(anchor_boxes,offsets,gt_boxes,iou_mat
     formatted_anchor_boxes = convert_bounding_box_format(anchor_boxes * anchor_scaling_stride) # Converted anchor boxes into format [xc,yc,w,h]
     formatted_gt_boxes = convert_bounding_box_format(gt_boxes) # Converted ground truth boxes into format [xc,yc,w,h]
 
-    # After conversion the offsets t and t* are calculated
-    t_offset = calculate_bounding_box_deltas_between_pred_and_anchor_box(formatted_anchor_boxes,offsets)
+    # # After conversion the offset t* is calculated
     t_star_offset = calculate_bounding_box_deltas_between_gt_boxes(formatted_gt_boxes,formatted_anchor_boxes,iou_matrix,object_labels)
 
     # After calculating t and t* the positive anchors from t are retained and smooth l1 loss is calculated amongst them
     positive_mask = tf.squeeze(object_labels,axis=-1) == 1 # Squeezed the last dimension to make it more intuitive, created a binary mask for the positive anchors
-    positive_offsets = tf.boolean_mask(t_offset,positive_mask) # Gathered all the positive anchors in the data
+    positive_offsets = tf.boolean_mask(offsets,positive_mask) # Gathered all the positive anchors in the data
 
     # After gathering the offsets for the positive anchor boxes, the smooth l1 loss can be calulcated for it
     loss = smooth_l1_loss(positive_offsets,t_star_offset)
 
     return loss
+    
 
 # Function to calculate the loss of the RPN model using the objectness and bounding box regression loss
 
@@ -827,17 +840,17 @@ def calculate_rpn_loss(anchor_boxes,offsets,gt_boxes,iou_matrix,object_labels,ob
         Total loss value for the RPN model
     """ 
     # Calculate the number of positive_anchors
-    num_positive_anchor_boxes = tf.reduce_sum(tf.cast(object_labels == 1, tf.float32))
-    num_negative_anchor_boxes = tf.reduce_sum(tf.cast(object_labels == -1, tf.float32))
+    # num_positive_anchor_boxes = tf.reduce_sum(tf.cast(object_labels == 1, tf.float32))
+    # num_negative_anchor_boxes = tf.reduce_sum(tf.cast(object_labels == 0, tf.float32))
 
     # Calculate the normalizing terms
-    n_cls = tf.maximum(num_positive_anchor_boxes + num_negative_anchor_boxes, 1e-6)
-    n_reg = tf.maximum(num_positive_anchor_boxes, 1)
+    # n_cls = tf.maximum(num_positive_anchor_boxes + num_negative_anchor_boxes, 1e-6)
+    # n_reg = tf.maximum(num_positive_anchor_boxes, 1e-6)
 
-    objectness_loss = calculate_objectness_loss(objectness_scores,object_labels)
+    objectness_loss = calculate_objectness_loss(objectness_scores[...,1],object_labels)
     regression_loss = calculate_bounding_box_regression_loss(anchor_boxes,offsets,gt_boxes,iou_matrix,object_labels,anchor_scaling_stride = anchor_scaling_stride)
     # Calculate the total loss based on the paper
-    total_loss =  ((1/n_cls) * (objectness_loss)) + (lambda_ * (1/n_reg) * regression_loss) 
+    total_loss =  (objectness_loss) + (lambda_ * regression_loss) 
 
     return total_loss
 
@@ -983,7 +996,7 @@ def roi_pooling(feature_map,positive_anchor_boxes,positive_indices,offsets_for_a
         Feature Map from the RPN (B,FEATURE_MAP_WIDTH,FEATURE_MAP_HEIGHT,CHANNELS)
 
     positive_anchor_boxes : Tensor
-        Tensor of bounding boxes coordinates in the format (X_MIN,Y_MIN,X_MAX,Y_MAX) and the shape of (NUM_POS_ANCHOR_BOXES,4)
+        Tensor of bounding boxes coordinates in the format (X_MIN,Y_MIN,X_MAX,Y_MAX) and the shape of (B,NUM_POS_ANCHOR_BOXES,4)
 
     positive_indices : Tensor
         Indices of the positive anchor boxes in the shape of (NUM_POS_ANCHORS,4) in the format of (B,ROW_NUM,COL_NUM,NUM_OF_ANCHORS_PER_PIXEL)
@@ -1000,7 +1013,10 @@ def roi_pooling(feature_map,positive_anchor_boxes,positive_indices,offsets_for_a
     Returns:
     -------
     roi: Tensor
-        RoI's in the cropped and resized shape of (NUM_ROI,GRID_ROW_SIZE,GRID_COL_SIZE,CHANNELS)
+        RoI's in the cropped and resized shape of (B,NUM_ROI,GRID_ROW_SIZE,GRID_COL_SIZE,CHANNELS)
+
+    bounding_boxes: Tensor
+        Bounding boxes for the the RoI's in XY Coordinate system in the shape of (B,NUM_POS_ANCHOR_BOXES,4)
     """
 
     # Convert the bounding boxes from (X_MIN,Y_MIN,X_MAX,Y_MAX) to (Xc,Yc,W,H)
@@ -1008,16 +1024,35 @@ def roi_pooling(feature_map,positive_anchor_boxes,positive_indices,offsets_for_a
     
     # Need to create the RoI's before pooling them in the correct size
     region_of_interests = refine_region_of_interests(converted_positive_anchor_boxes,offsets_for_anchor_boxes)
-    bounding_boxes = convert_center_format_boxes_to_xy_coordinate(region_of_interests)
+    bounding_boxes = convert_center_format_boxes_to_xy_coordinate(region_of_interests) # Needed since offsets can be only done in the center format
    
     # Filtering the valid indices after padding done before
     valid_mask = tf.reduce_any(tf.not_equal(positive_indices,-1),axis=-1)
     positive_indices = tf.boolean_mask(positive_indices,valid_mask)
 
-    # Divide RoI's into Grids
+    # # Divide RoI's into Grids
     blocks = divide_roi_into_grids(feature_map,bounding_boxes,positive_indices[:,0],output_size_x,output_size_y)
 
-    return blocks,bounding_boxes
+    # return blocks,bounding_boxes
+
+    # Need to stack them back again into batched padded tensors for image wise
+    image_rois_split = []
+    for image in range(tf.reduce_max(positive_indices[:,0]) + 1):
+        # Creating a mask for the particular image
+        image_mask = positive_indices[:,0] == image
+        # Getting the RoI's that align with this mask
+        image_rois = tf.boolean_mask(blocks,image_mask)
+
+        image_rois_split.append(image_rois)
+
+    # Padding the tensors so that they can be stacked
+    num_of_max_rois = tf.reduce_max([tf.shape(dim)[0] for dim in image_rois_split])
+    padded_tensors = [tf.pad(tensor, paddings = [[0,num_of_max_rois - tf.shape(tensor)[0]],[0,0],[0,0],[0,0]]) for tensor in image_rois_split]
+
+    # Stacking the two tensors together
+    stacked_roi_tensors = tf.stack(padded_tensors,axis=0)
+    
+    return stacked_roi_tensors, bounding_boxes
 
 # Function to assign RoI to Ground Truth Boxes
 
@@ -1127,32 +1162,59 @@ def calculate_bounding_box_deltas_between_roi_and_ground_truth_box(ground_truth_
     # Converting the ground truth boxes from xy-format to center format
     center_ground_truth_boxes = convert_xy_boxes_to_center_format(ground_truth_boxes)
 
-    # Calculate the offsets using the formula from the paper
-    gt_center_x, gt_center_y, gt_w, gt_h = tf.split(center_ground_truth_boxes, num_or_size_splits = 4, axis = -1) # Splitting ground truth boxes
-    roi_center_x, roi_center_y, roi_w, roi_h = tf.split(center_roi_coordinates, num_or_size_splits = 4, axis = -1) # Splitting the RoI's
+    # # Calculate the offsets using the formula from the paper
+    # gt_center_x, gt_center_y, gt_w, gt_h = tf.split(center_ground_truth_boxes, num_or_size_splits = 4, axis = -1) # Splitting ground truth boxes
+    # roi_center_x, roi_center_y, roi_w, roi_h = tf.split(center_roi_coordinates, num_or_size_splits = 4, axis = -1) # Splitting the RoI's
 
-    # Calculating the offsets
-    t_x = (gt_center_x - roi_center_x)/(roi_w + 1e-6)
-    t_y = (gt_center_y - roi_center_y)/(roi_h + 1e-6)
-    t_w = tf.math.log(gt_w/(roi_w + 1e-6))
-    t_h = tf.math.log(gt_h/(roi_h + 1e-6))
+    # # Calculating the offsets
+    # t_x = (gt_center_x - roi_center_x)/(roi_w + 1e-6)
+    # t_y = (gt_center_y - roi_center_y)/(roi_h + 1e-6)
+    # t_w = tf.math.log(gt_w/(roi_w + 1e-6))
+    # t_h = tf.math.log(gt_h/(roi_h + 1e-6))
     
-    t = tf.concat([t_x,t_y,t_w,t_h],axis=-1)
+    # t = tf.concat([t_x,t_y,t_w,t_h],axis=-1)
 
-    # Calculating a valid mask based on the rois
-    valid_mask = tf.reduce_any(roi_coordinates != 0.0, axis=-1)
-    valid_mask = tf.reshape(valid_mask,[-1])
+    # # Calculating a valid mask based on the rois
+    # valid_mask = tf.reduce_any(roi_coordinates != 0.0, axis=-1)
+    # valid_mask = tf.reshape(valid_mask,[-1])
 
-    # Filtering the t offsets using the same valid mask
-    t = tf.reshape(t,[-1,4])
-    filtered_t_offsets = tf.boolean_mask(t,valid_mask)
+    # # Filtering the t offsets using the same valid mask
+    # t = tf.reshape(t,[-1,4])
+    # filtered_t_offsets = tf.boolean_mask(t,valid_mask)
 
-    # Filtering the RoI labels for Categorical Crossentropy in the RoI Head
-    flattened_roi_labels = tf.reshape(roi_labels,[-1])
-    # Getting the valid labels from them by using the same mask
-    valid_roi_labels = tf.boolean_mask(flattened_roi_labels,valid_mask)
-    
-    return filtered_t_offsets,valid_roi_labels
+    # # Filtering the RoI labels for Categorical Crossentropy in the RoI Head
+    # flattened_roi_labels = tf.reshape(roi_labels,[-1])
+    # # Getting the valid labels from them by using the same mask
+    # valid_roi_labels = tf.boolean_mask(flattened_roi_labels,valid_mask)
+
+    offsets_split = []
+    labels_split = []
+
+    for batch in range(tf.shape(center_roi_coordinates)[0]):
+        # Calculate the offsets using the formula from the paper
+        gt_center_x, gt_center_y, gt_w, gt_h = tf.split(center_ground_truth_boxes[batch], num_or_size_splits = 4, axis = -1) # Splitting ground truth boxes
+        roi_center_x, roi_center_y, roi_w, roi_h = tf.split(center_roi_coordinates[batch], num_or_size_splits = 4, axis = -1) # Splitting the RoI's
+
+        # Calculating the offsets
+        t_x = (gt_center_x - roi_center_x)/(roi_w + 1e-6)
+        t_y = (gt_center_y - roi_center_y)/(roi_h + 1e-6)
+        t_w = tf.math.log(gt_w/(roi_w + 1e-6))
+        t_h = tf.math.log(gt_h/(roi_h + 1e-6))
+
+        t = tf.concat([t_x,t_y,t_w,t_h],axis=-1)
+
+        # Calculating a valid mask based on the rois
+        valid_mask = tf.reduce_any(roi_coordinates[batch] != 0.0, axis=-1)
+        filtered_t_offsets = tf.boolean_mask(t,valid_mask)
+
+        offsets_split.append(filtered_t_offsets)
+
+    num_of_max_offsets = tf.reduce_max([tf.shape(dim)[0] for dim in offsets_split])
+    padded_tensors = [tf.pad(tensor, paddings = [[0,num_of_max_offsets - tf.shape(tensor)[0]],[0,0]]) for tensor in offsets_split]
+
+    stacked_offsets = tf.stack(padded_tensors,axis=0)
+        
+    return stacked_offsets, roi_labels
 
 
 def calculate_roi_head_regression_loss(t_star,regression_head,roi_labels, number_of_classes):

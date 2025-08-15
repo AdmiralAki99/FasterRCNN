@@ -204,6 +204,250 @@ class RoIHead(Layer):
         return logits, deltas # Returning the class output logits as well as the regression coordinates for the bounding box
     
 # Consolidated Faster R-CNN Model
+# class FasterRCNN(tf.keras.Model):
+    
+#     def __init__(self, num_of_anchors_per_pixel = 20, num_classes = 20):
+        
+#         super(FasterRCNN, self).__init__()
+#         # Creating the backbone for the model
+#         self.backbone = VGG_16_NFCL()
+#         # Creating the RPN for the model
+#         self.rpn = RegionProposalNetwork(num_of_anchors_per_pixel)
+#         # Creating the RoI Head for the model
+#         self.roi_head = RoIHead(num_classes)
+
+#         self.num_classes = num_classes + 1
+
+#         self.roi_delta_loss = Huber(delta=1.0)
+
+#     def call(self,images,gt_boxes = None, gt_labels = None, training=False):
+#         # Pass the image through the backbone
+#         feature_map = self.backbone.call(images)
+
+#         # Initialize the anchors for the model
+#         anchor_boxes = initialize_all_anchor_boxes(images.shape, feature_map.shape)
+        
+#         # Pass the feature map to the RPN
+#         objectness_scores,bbox_deltas = self.rpn.call(feature_map)
+        
+#         # Debugging information
+#         tf.print("Feature Map Shape:", feature_map.shape)
+#         tf.print("Anchor Boxes Shape:", anchor_boxes.shape)
+#         tf.print("Objectness Scores Shape:", objectness_scores.shape)
+#         tf.print("Bounding Box Deltas Shape:", bbox_deltas.shape)
+        
+#         # Refine region of interests
+#         proposals = refine_region_of_interests_inference(anchor_boxes,bbox_deltas)
+
+#         # Flattening the proposals 
+#         B,H,W,A,_ = proposals.shape
+
+#         proposals_flattened = tf.reshape(proposals,[B,-1,4])
+        
+#         # Scale the proposals to the original image size
+#         stride = tf.cast(images.shape[1] / feature_map.shape[1], tf.float32)
+        
+#         proposals_flattened = proposals_flattened * stride
+
+#         if training:
+
+#             # Compute IoU and object labels
+#             object_labels, iou_matrix = generate_objectness_labels(anchor_boxes, gt_boxes)
+
+#             # Calculating the RPN Loss
+#             rpn_loss = calculate_rpn_loss(anchor_boxes,bbox_deltas,gt_boxes,iou_matrix,object_labels,objectness_scores)
+
+#             # Getting positive anchors for RoI
+#             pos_anchors, pos_offsets, pos_indices = get_positive_anchor_boxes_and_corresponding_offsets(anchor_boxes, bbox_deltas, object_labels)
+
+#             # RoI Pooling
+#             roi_blocks, roi_boxes = roi_pooling(feature_map, pos_anchors, pos_indices, pos_offsets)
+
+#             # Assign RoI to GT Boxes
+
+#             roi_labels, best_gt_indices, max_iou_per_anchor = assign_roi_to_ground_truth_box(gt_boxes, roi_boxes, gt_labels)
+
+#             # Match Ground truth box to the RoI Coordinate
+#             matched_gt_boxes = match_gt_box_to_roi_coordinate(gt_boxes,best_gt_indices)
+
+#             # Calculating the deltas for the RoI
+
+#             roi_targets, filtered_roi_labels = calculate_bounding_box_deltas_between_roi_and_ground_truth_box(matched_gt_boxes, roi_boxes, roi_labels)
+            
+#             tf.print("Labels Shape Pre Sampling:", tf.shape(filtered_roi_labels))
+#             tf.print("BBoxes Shape Pre Sampling:", tf.shape(roi_boxes))
+#             tf.print("Deltas Shape Pre Sampling:", tf.shape(roi_targets))
+    
+#             tf.print("Labels Pre Sampling:", filtered_roi_labels)
+#             tf.print("BBoxes Pre Sampling:", roi_boxes)
+#             tf.print("Deltas Pre Sampling:", roi_targets)
+            
+#             # # Sampling RoI Blocks
+            
+#             # sampled_roi_boxes = []
+#             # sampled_roi_labels = []
+#             # sampled_roi_targets = []
+#             # sampled_roi_blocks = []
+            
+#             # for batch in range(B):
+#             #     # Get the sample RoIs per image
+#             #     roi_boxes, roi_label,roi_target,roi_blocks = sample_rois_per_image(roi_boxes[batch], filtered_roi_labels[batch], roi_targets[batch], roi_blocks[batch])
+#             #     sampled_roi_boxes.append(roi_boxes)
+#             #     sampled_roi_labels.append(roi_label)
+#             #     sampled_roi_targets.append(roi_target)
+#             #     sampled_roi_blocks.append(roi_blocks)
+                
+#             # # Converting the lists to tensors
+#             # roi_boxes = tf.stack(sampled_roi_boxes, axis=0)
+#             # filtered_roi_labels = tf.stack(sampled_roi_labels, axis=0)
+#             # roi_targets = tf.stack(sampled_roi_targets, axis=0)
+#             # roi_blocks = tf.stack(sampled_roi_blocks, axis=0)
+            
+#             # tf.print("Labels Post Sampling:", filtered_roi_labels.shape)
+#             # tf.print("RoI Blocks Post Sampling:", roi_boxes.shape)
+#             # tf.print("Deltas Post Sampling:", roi_targets.shape)
+#             # tf.print("RoI Blocks Shape:", roi_blocks.shape)
+            
+#             # RoI Head
+
+#             class_scores, roi_bbox_deltas = self.roi_head(roi_blocks)
+            
+#             # tf.print("Filtered ROI labels:", filtered_roi_labels)
+            
+#             # assert tf.reduce_all((filtered_roi_labels >= 0) & (filtered_roi_labels < self.num_classes)), "Invalid class labels"
+            
+            
+#             tf.debugging.check_numerics(class_scores, "Class scores contain NaN or Inf")
+
+#             valid_mask = tf.where((filtered_roi_labels >= 0) & (filtered_roi_labels < self.num_classes))[:, 0]
+#             valid_labels = tf.gather(filtered_roi_labels, valid_mask)
+#             valid_logits = tf.gather(class_scores, valid_mask)
+
+#             if tf.shape(valid_labels)[0] > 0:
+#                 classification_loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(
+#                     valid_labels, valid_logits
+#                 )
+#             else:
+#                 classification_loss = tf.constant(0.0)
+            
+#             regression_loss = calculate_roi_head_regression_loss(roi_targets,roi_bbox_deltas,filtered_roi_labels,number_of_classes=self.num_classes)
+
+#             total_loss = rpn_loss  + classification_loss + regression_loss
+            
+#             return {
+#                 "feature_map": feature_map,
+#                 "anchors": anchor_boxes,
+#                 "proposals" : proposals_flattened,
+#                 "rpn_loss": rpn_loss,
+#                 "rpn_objectness_score": objectness_scores,
+#                 "rpn_deltas": bbox_deltas,
+#                 "roi_cls_loss": classification_loss,
+#                 "roi_reg_loss": regression_loss,
+#                 "roi_deltas": roi_bbox_deltas,
+#                 "total_loss": total_loss
+#             }
+            
+#         # Inference Logic
+
+#         # Filtering the top k boxes
+#         top_proposals_flattened,top_indices_flattened = inference_filter_top_k(proposals_flattened,objectness_scores)
+             
+#         # Converting the proposals to center coordinates
+#         top_proposals_xy_px  = convert_center_format_boxes_to_xy_coordinate(top_proposals_flattened)
+
+#         # Scaling the top proposals to the feature map size
+#         top_proposals_xy_fm = top_proposals_xy_px / stride
+
+#         # RoI pooling inference
+#         roi_proposals = roi_pooling_inference(feature_map,top_proposals_xy_fm,top_indices_flattened[:,0])
+        
+#         # Passing it through the RoI Head
+#         classification_score, regression_head = self.roi_head(roi_proposals)
+        
+#         # Calculating the probabilities of the classes
+#         classification_probs = tf.nn.softmax(classification_score, axis=-1)
+        
+#         # Foreground probabilities
+#         foreground_probs = classification_probs[:,1:]
+
+#         # Calculating the predicted labels
+#         final_labels = tf.argmax(foreground_probs,axis=-1) + 1 # Adding 1 to account for the background class
+        
+#         # Converting proposals to xy coordinates
+#         top_proposals_flattened = convert_center_format_boxes_to_xy_coordinate(top_proposals_flattened)
+        
+#         foreground_proposals_px,foreground_scores,foreground_labels,foreground_offsets_filtered = filter_foreground_predictions(top_proposals_xy_px,classification_probs,regression_head,final_labels,self.num_classes)
+
+#         # Converting the xy-coordinates to center coordinates
+#         foreground_proposals_center = convert_xy_boxes_to_center_format(foreground_proposals_px)
+        
+#         # Applying the offsets to the filtered proposals
+
+#         adjusted_foreground_proposals = apply_bounding_box_deltas(foreground_proposals_center,foreground_offsets_filtered)
+
+#         # Applying Non Max Suppression (NMS)
+        
+#         # indices = tf.stack([tf.range(tf.shape(classification_score)[0],dtype=tf.int64), final_labels], axis=1)
+#         # predicted_class_scores = tf.gather_nd(classification_score, indices)
+        
+#         final_boxes = []
+#         final_scores = []
+#         final_labels = []
+
+#         for class_id in range(1,self.num_classes):
+#             # Creating a binary mask for each class
+#             class_mask = foreground_labels == class_id
+
+#             # Checking if there are no boxes for the class
+#             if not tf.reduce_any(class_mask):
+#                 continue
+
+#             # Getting the for the class
+#             boxes_per_class = tf.boolean_mask(adjusted_foreground_proposals,class_mask)
+#             scores_per_class = tf.boolean_mask(foreground_scores,class_mask)
+            
+#             print("boxes shape:", boxes_per_class.shape)
+#             print("scores shape:", scores_per_class.shape)
+#             print("max score:", tf.reduce_max(scores_per_class))
+#             print("min score:", tf.reduce_min(scores_per_class))
+#             print("num scores > 0.02:", tf.reduce_sum(tf.cast(scores_per_class > 0.02, tf.int32)))
+
+
+#             if boxes_per_class.shape[0] == 0 or scores_per_class.shape[0] == 0:
+#                 continue
+            
+#             # Applying NMS for each class
+#             class_indices = tf.image.non_max_suppression(boxes = boxes_per_class,scores=scores_per_class,max_output_size = 100,iou_threshold = 0.5,score_threshold = 0.02)
+
+#             # Gathering boxes, scores, labels
+#             nms_boxes = tf.gather(boxes_per_class,class_indices)
+#             nms_scores = tf.gather(scores_per_class,class_indices)
+#             nms_labels = tf.fill(tf.shape(nms_scores),class_id)
+
+#             # Appending the boxes
+#             final_boxes.append(nms_boxes)
+#             final_scores.append(nms_scores)
+#             final_labels.append(nms_labels)
+       
+#         if final_boxes:
+#             final_boxes = tf.concat(final_boxes,axis=0)
+#             final_scores = tf.concat(final_scores,axis=0)
+#             final_labels = tf.concat(final_labels,axis=0)
+#         else:
+#             final_boxes = tf.zeros([0, 4])
+#             final_scores = tf.zeros([0])
+#             final_labels = tf.zeros([0], dtype=tf.int64)
+        
+#         return {
+#         "boxes": final_boxes,
+#         "scores": final_scores,
+#         "labels": final_labels
+#         }
+          
+# TODO: Implement the training loop for Tensorboard logging
+
+# TODO: Implement the new Pipelines from me
+
 class FasterRCNN(tf.keras.Model):
     
     def __init__(self, num_of_anchors_per_pixel = 20, num_classes = 20):
@@ -220,228 +464,35 @@ class FasterRCNN(tf.keras.Model):
 
         self.roi_delta_loss = Huber(delta=1.0)
 
-    def call(self,images,gt_boxes = None, gt_labels = None, training=False):
+    def call(self,images,gt_boxes = None, gt_labels = None, training=False, debug=False):
         # Pass the image through the backbone
         feature_map = self.backbone.call(images)
-
-        # Initialize the anchors for the model
-        anchor_boxes = initialize_all_anchor_boxes(images.shape, feature_map.shape)
         
-        # Pass the feature map to the RPN
-        objectness_scores,bbox_deltas = self.rpn.call(feature_map)
+        # Initialize the anchor boxes for the model
+        anchors = initialize_all_anchor_boxes(images.shape, feature_map.shape)
         
-        # Debugging information
-        tf.print("Feature Map Shape:", feature_map.shape)
-        tf.print("Anchor Boxes Shape:", anchor_boxes.shape)
-        tf.print("Objectness Scores Shape:", objectness_scores.shape)
-        tf.print("Bounding Box Deltas Shape:", bbox_deltas.shape)
-        
-        # Refine region of interests
-        proposals = refine_region_of_interests_inference(anchor_boxes,bbox_deltas)
-
-        # Flattening the proposals 
-        B,H,W,A,_ = proposals.shape
-
-        proposals_flattened = tf.reshape(proposals,[B,-1,4])
-        
-        # Scale the proposals to the original image size
-        stride = tf.cast(images.shape[1] / feature_map.shape[1], tf.float32)
-        
-        proposals_flattened = proposals_flattened * stride
-
+        # Isolating the training and inference pipelines
         if training:
-
-            # Compute IoU and object labels
-            object_labels, iou_matrix = generate_objectness_labels(anchor_boxes, gt_boxes)
-
-            # Calculating the RPN Loss
-            rpn_loss = calculate_rpn_loss(anchor_boxes,bbox_deltas,gt_boxes,iou_matrix,object_labels,objectness_scores)
-
-            # Getting positive anchors for RoI
-            pos_anchors, pos_offsets, pos_indices = get_positive_anchor_boxes_and_corresponding_offsets(anchor_boxes, bbox_deltas, object_labels)
-
-            # RoI Pooling
-            roi_blocks, roi_boxes = roi_pooling(feature_map, pos_anchors, pos_indices, pos_offsets)
-
-            # Assign RoI to GT Boxes
-
-            roi_labels, best_gt_indices, max_iou_per_anchor = assign_roi_to_ground_truth_box(gt_boxes, roi_boxes, gt_labels)
-
-            # Match Ground truth box to the RoI Coordinate
-            matched_gt_boxes = match_gt_box_to_roi_coordinate(gt_boxes,best_gt_indices)
-
-            # Calculating the deltas for the RoI
-
-            roi_targets, filtered_roi_labels = calculate_bounding_box_deltas_between_roi_and_ground_truth_box(matched_gt_boxes, roi_boxes, roi_labels)
+            # Training Logic
             
-            tf.print("Labels Shape Pre Sampling:", tf.shape(filtered_roi_labels))
-            tf.print("BBoxes Shape Pre Sampling:", tf.shape(roi_boxes))
-            tf.print("Deltas Shape Pre Sampling:", tf.shape(roi_targets))
-    
-            tf.print("Labels Pre Sampling:", filtered_roi_labels)
-            tf.print("BBoxes Pre Sampling:", roi_boxes)
-            tf.print("Deltas Pre Sampling:", roi_targets)
+            # Pass the feature map to the RPN
+            objectness_scores, bounding_box_deltas = self.rpn.call(feature_map)
             
-            # # Sampling RoI Blocks
-            
-            # sampled_roi_boxes = []
-            # sampled_roi_labels = []
-            # sampled_roi_targets = []
-            # sampled_roi_blocks = []
-            
-            # for batch in range(B):
-            #     # Get the sample RoIs per image
-            #     roi_boxes, roi_label,roi_target,roi_blocks = sample_rois_per_image(roi_boxes[batch], filtered_roi_labels[batch], roi_targets[batch], roi_blocks[batch])
-            #     sampled_roi_boxes.append(roi_boxes)
-            #     sampled_roi_labels.append(roi_label)
-            #     sampled_roi_targets.append(roi_target)
-            #     sampled_roi_blocks.append(roi_blocks)
+            # Debugging information
+            if debug:
+                tf.print("Feature Map Shape:", feature_map.shape)
+                tf.print("Anchor Boxes Shape:", anchors.shape)
+                tf.print("Objectness Scores Shape:", objectness_scores.shape)
+                tf.print("Bounding Box Deltas Shape:", bounding_box_deltas.shape)
                 
-            # # Converting the lists to tensors
-            # roi_boxes = tf.stack(sampled_roi_boxes, axis=0)
-            # filtered_roi_labels = tf.stack(sampled_roi_labels, axis=0)
-            # roi_targets = tf.stack(sampled_roi_targets, axis=0)
-            # roi_blocks = tf.stack(sampled_roi_blocks, axis=0)
+            # Generate objectness labels and IoU matrix
+            object_labels, iou_matrix = generate_objectness_labels(anchors, gt_boxes)
             
-            # tf.print("Labels Post Sampling:", filtered_roi_labels.shape)
-            # tf.print("RoI Blocks Post Sampling:", roi_boxes.shape)
-            # tf.print("Deltas Post Sampling:", roi_targets.shape)
-            # tf.print("RoI Blocks Shape:", roi_blocks.shape)
-            
-            # RoI Head
-
-            class_scores, roi_bbox_deltas = self.roi_head(roi_blocks)
-            
-            # tf.print("Filtered ROI labels:", filtered_roi_labels)
-            
-            # assert tf.reduce_all((filtered_roi_labels >= 0) & (filtered_roi_labels < self.num_classes)), "Invalid class labels"
+            # Calculate the RPN Loss
             
             
-            tf.debugging.check_numerics(class_scores, "Class scores contain NaN or Inf")
-
-            valid_mask = tf.where((filtered_roi_labels >= 0) & (filtered_roi_labels < self.num_classes))[:, 0]
-            valid_labels = tf.gather(filtered_roi_labels, valid_mask)
-            valid_logits = tf.gather(class_scores, valid_mask)
-
-            if tf.shape(valid_labels)[0] > 0:
-                classification_loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(
-                    valid_labels, valid_logits
-                )
-            else:
-                classification_loss = tf.constant(0.0)
             
-            regression_loss = calculate_roi_head_regression_loss(roi_targets,roi_bbox_deltas,filtered_roi_labels,number_of_classes=self.num_classes)
-
-            total_loss = rpn_loss  + classification_loss + regression_loss
-            
-            return {
-                "feature_map": feature_map,
-                "anchors": anchor_boxes,
-                "proposals" : proposals_flattened,
-                "rpn_loss": rpn_loss,
-                "rpn_objectness_score": objectness_scores,
-                "rpn_deltas": bbox_deltas,
-                "roi_cls_loss": classification_loss,
-                "roi_reg_loss": regression_loss,
-                "roi_deltas": roi_bbox_deltas,
-                "total_loss": total_loss
-            }
-            
-        # Inference Logic
-
-        # Filtering the top k boxes
-        top_proposals_flattened,top_indices_flattened = inference_filter_top_k(proposals_flattened,objectness_scores)
-             
-        # Converting the proposals to center coordinates
-        top_proposals_xy_px  = convert_center_format_boxes_to_xy_coordinate(top_proposals_flattened)
-
-        # Scaling the top proposals to the feature map size
-        top_proposals_xy_fm = top_proposals_xy_px / stride
-
-        # RoI pooling inference
-        roi_proposals = roi_pooling_inference(feature_map,top_proposals_xy_fm,top_indices_flattened[:,0])
-        
-        # Passing it through the RoI Head
-        classification_score, regression_head = self.roi_head(roi_proposals)
-        
-        # Calculating the probabilities of the classes
-        classification_probs = tf.nn.softmax(classification_score, axis=-1)
-        
-        # Foreground probabilities
-        foreground_probs = classification_probs[:,1:]
-
-        # Calculating the predicted labels
-        final_labels = tf.argmax(foreground_probs,axis=-1) + 1 # Adding 1 to account for the background class
-        
-        # Converting proposals to xy coordinates
-        top_proposals_flattened = convert_center_format_boxes_to_xy_coordinate(top_proposals_flattened)
-        
-        foreground_proposals_px,foreground_scores,foreground_labels,foreground_offsets_filtered = filter_foreground_predictions(top_proposals_xy_px,classification_probs,regression_head,final_labels,self.num_classes)
-
-        # Converting the xy-coordinates to center coordinates
-        foreground_proposals_center = convert_xy_boxes_to_center_format(foreground_proposals_px)
-        
-        # Applying the offsets to the filtered proposals
-
-        adjusted_foreground_proposals = apply_bounding_box_deltas(foreground_proposals_center,foreground_offsets_filtered)
-
-        # Applying Non Max Suppression (NMS)
-        
-        # indices = tf.stack([tf.range(tf.shape(classification_score)[0],dtype=tf.int64), final_labels], axis=1)
-        # predicted_class_scores = tf.gather_nd(classification_score, indices)
-        
-        final_boxes = []
-        final_scores = []
-        final_labels = []
-
-        for class_id in range(1,self.num_classes):
-            # Creating a binary mask for each class
-            class_mask = foreground_labels == class_id
-
-            # Checking if there are no boxes for the class
-            if not tf.reduce_any(class_mask):
-                continue
-
-            # Getting the for the class
-            boxes_per_class = tf.boolean_mask(adjusted_foreground_proposals,class_mask)
-            scores_per_class = tf.boolean_mask(foreground_scores,class_mask)
-            
-            print("boxes shape:", boxes_per_class.shape)
-            print("scores shape:", scores_per_class.shape)
-            print("max score:", tf.reduce_max(scores_per_class))
-            print("min score:", tf.reduce_min(scores_per_class))
-            print("num scores > 0.02:", tf.reduce_sum(tf.cast(scores_per_class > 0.02, tf.int32)))
-
-
-            if boxes_per_class.shape[0] == 0 or scores_per_class.shape[0] == 0:
-                continue
-            
-            # Applying NMS for each class
-            class_indices = tf.image.non_max_suppression(boxes = boxes_per_class,scores=scores_per_class,max_output_size = 100,iou_threshold = 0.5,score_threshold = 0.02)
-
-            # Gathering boxes, scores, labels
-            nms_boxes = tf.gather(boxes_per_class,class_indices)
-            nms_scores = tf.gather(scores_per_class,class_indices)
-            nms_labels = tf.fill(tf.shape(nms_scores),class_id)
-
-            # Appending the boxes
-            final_boxes.append(nms_boxes)
-            final_scores.append(nms_scores)
-            final_labels.append(nms_labels)
-       
-        if final_boxes:
-            final_boxes = tf.concat(final_boxes,axis=0)
-            final_scores = tf.concat(final_scores,axis=0)
-            final_labels = tf.concat(final_labels,axis=0)
         else:
-            final_boxes = tf.zeros([0, 4])
-            final_scores = tf.zeros([0])
-            final_labels = tf.zeros([0], dtype=tf.int64)
-        
-        return {
-        "boxes": final_boxes,
-        "scores": final_scores,
-        "labels": final_labels
-        }
-          
-# TODO: Implement the training loop for Tensorboard logging
+            # Inference Logic
+            
+            pass
