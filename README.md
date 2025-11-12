@@ -187,7 +187,7 @@ show_dataset_examples(val_ds.unbatch().take(5))
 
 Below are sample detections produced by the trained Faster R-CNN model.
 
-<p align="center"> <img src="assets/detection_sample1.jpg" width="45%" alt="Detection Example 1"/> <img src="assets/detection_sample2.jpg" width="45%" alt="Detection Example 2"/> </p>
+<p align="center"> <img src="assets/detection_sample1.png" alt="Detection Example 1"/></p>
 
 ## 📚 Metrics
 
