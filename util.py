@@ -13,15 +13,39 @@ from tensorflow.keras.losses import SparseCategoricalCrossentropy, Huber, Binary
 
 from helpers import dump_tensor_to_txt
 
-
 import matplotlib.colors as mcolors
 import random
 
 ## CONSTANTS
 
+"""
 BASE_ANCHOR_BOX_SIZE = [128, 128]
-ANCHOR_BOX_RATIOS = [0.33,0.5, 1, 1.5, 2]
-ANCHOR_BOX_SCALES = [0.25,0.5, 1, 2, 3, 4] # TODO: These ratios are causing bigger boxes to be prioiritized early. [1, 2, 3, 4, 6, 7]
+ANCHOR_BOX_RATIOS = [0.333, 0.5, 1, 1.5]
+ANCHOR_BOX_SCALES = [1, 2, 3, 4, 6, 7]
+
+"""
+
+BASE_ANCHOR_BOX_SIZE = [128, 128]
+ANCHOR_BOX_RATIOS = [0.333, 0.5, 1, 1.5, 2.0]
+ANCHOR_BOX_SCALES = [0.75, 1, 2, 3, 4, 6, 7] # TODO: These ratios are causing bigger boxes to be prioiritized early. [1, 2, 3, 4, 6, 7]
+
+# Hyperparameters
+RPN_POSITIVE_ANCHOR_IOU_THRESHOLD = 0.50
+RPN_NEGATIVE_ANCHOR_IOU_THRESHOLD = 0.20
+RPN_TOTAL_ANCHOR_SAMPLES = 256
+RPN_POSITIVE_ANCHOR_FRACTION = 0.5
+RPN_PRE_NMS_TOP_K = 12000
+RPN_POST_NMS_TOP_K = 2000
+PROPOSAL_MIN_SIZE = 1
+NUM_OF_ANCHORS_PER_PIXEL = len(ANCHOR_BOX_RATIOS) * len(ANCHOR_BOX_SCALES)
+
+# RoI Hyperparameters
+ROI_SAMPLE_SIZE = 512
+ROI_POSITIVE_FRACTION = 0.25
+# IOU Threshold for positive proposals
+ROI_POSITIVE_IOU_THRESHOLD = 0.4
+# IOU Threshold for negative proposals
+ROI_NEGATIVE_IOU_THRESHOLD = 0.0
 
 # Function to get number of anchor points on a feature map
 def get_number_of_anchor_points(feature_map) -> tuple[int, int, int]:
@@ -31,13 +55,12 @@ def get_number_of_anchor_points(feature_map) -> tuple[int, int, int]:
     Parameters
     ----------
     feature_map: Feature Map created by CNN backbone
-    ----------
 
     Returns
     ----------
     Tuple[int, int, int]
         Tuple of the Number of anchor points, the X-axis size of the feature map, the Y-axis size of the feature map
-    ----------
+
     """
 
     if len(feature_map.shape) != 4:
@@ -289,7 +312,7 @@ def IOU_scores(ground_truth_boxes,predicted_boxes):
     return tf.squeeze(iou_scores, axis=-1)
 
 # This function assigns labels to the anchor boxes based on the IOU scores with the ground truth
-def assign_object_label(iou_scores_tensor,IOU_FOREGROUND_THRESH = 0.60,IOU_BACKGROUND_THRESH = 0.40,FEATURE_MAP_WIDTH= 50,FEATURE_MAP_HEIGHT= 50,NUM_OF_ANCHORS_PER_PIXEL= 30):
+def assign_object_label(iou_scores_tensor,IOU_FOREGROUND_THRESH = RPN_POSITIVE_ANCHOR_IOU_THRESHOLD,IOU_BACKGROUND_THRESH = RPN_NEGATIVE_ANCHOR_IOU_THRESHOLD,FEATURE_MAP_WIDTH= 50,FEATURE_MAP_HEIGHT= 50,NUM_OF_ANCHORS_PER_PIXEL= NUM_OF_ANCHORS_PER_PIXEL):
     """
     Assign Object Labels If They Are Foreground (Object) or Background
 
@@ -311,7 +334,7 @@ def assign_object_label(iou_scores_tensor,IOU_FOREGROUND_THRESH = 0.60,IOU_BACKG
     object_label_tensor = tf.zeros_like(max_iou_per_anchor_box,dtype=tf.int64)
 
     # Calculate Positive Labels -> Ignored Labels
-    object_label_tensor = tf.where(max_iou_per_anchor_box >IOU_FOREGROUND_THRESH,1,object_label_tensor)
+    object_label_tensor = tf.where(max_iou_per_anchor_box >= IOU_FOREGROUND_THRESH,1,object_label_tensor)
     object_label_tensor = tf.where((max_iou_per_anchor_box <= IOU_FOREGROUND_THRESH) & (max_iou_per_anchor_box >= IOU_BACKGROUND_THRESH),-1,object_label_tensor)
 
     # Need to consider a proposal for each anchor box so the max per ground truth box
@@ -402,7 +425,7 @@ def create_proposals_from_rpn(anchors,deltas,image_stride = 16):
     return proposals
 
 # Filter by minimum size to clip the proposals to the right shape to remove degenerate boxes
-def filter_proposals_by_size(proposals,scores,min_size = 16):
+def filter_proposals_by_size(proposals,scores,min_size = 1):
     """
     Filter proposals by the size to remove the small boxes which can cause some effect on the errors of the model
 
@@ -506,7 +529,7 @@ def pre_nms_top_k(proposals,scores,k_thresh = 12000):
     return stacked_top_proposals, stacked_top_scores
 
 # NMS for Proposals
-def class_agnostic_nms_thresholding(proposals,scores,max_output_size=5000,iou_thresholding = 0.7):
+def class_agnostic_nms_thresholding(proposals,scores,max_output_size=5000,iou_thresholding = 0.85):
     """
     Perform Class agnostic NMS thresholding for the proposals to reduce overlapped functions
     NOTE: There is a padding feature in this function that can get triggered
@@ -605,7 +628,7 @@ def post_nms_top_k(proposals,scores,k_thresh = 2000):
     return stacked_top_proposals, stacked_top_scores
 
 # Assign the objectness labels for the proposals
-def assign_proposal_object_labels(iou_scores_tensor,iou_score_threshold = 0.5):
+def assign_proposal_object_labels(iou_scores_tensor,iou_score_threshold = 0.4):
     """
     Assign Object Labels If They Are Foreground (Object) or Background, No ignore label for the RoI Pipeline
 
@@ -640,7 +663,7 @@ def assign_proposal_object_labels(iou_scores_tensor,iou_score_threshold = 0.5):
     return object_label_tensor
 
 # Sample 512 boxes per image
-def sample_proposals_per_image(proposals,scores,ground_truth_boxes,sample_size_per_image = 512,positive_composition_ratio = 0.33,seed = None):
+def sample_proposals_per_image(proposals,scores,ground_truth_boxes,sample_size_per_image = 512,positive_composition_ratio = 0.25,seed = None):
     """
     Assign Object Labels If They Are Foreground (Object) or Background, No ignore label for the RoI Pipeline
 
@@ -3076,3 +3099,241 @@ def evaluation_compute_mAP(
         num_classes=num_classes, iou_thr=iou_thr, use_11pt=use_11pt
     )
     return mAP, ap_per_class
+
+def util_percentile(x, q, axis=None):
+    """
+    Percentile along axis using tf.sort (no TFP).
+    x: Tensor, q in [0,100]
+    """
+    x = tf.convert_to_tensor(x)
+    q = tf.convert_to_tensor(q, dtype=tf.float32)
+    if axis is None:
+        x = tf.reshape(x, [-1])
+        axis = 0
+    k = tf.cast(tf.shape(x)[axis], tf.float32)
+    rank = tf.clip_by_value(tf.cast(tf.math.floor((q/100.0)*(k-1.0)), tf.int32), 0, tf.shape(x)[axis]-1)
+    x_sorted = tf.sort(x, axis=axis)
+    return tf.gather(x_sorted, rank, axis=axis)
+
+def util_roi_head_p95_non_bg(cls_scores, from_logits=True):
+    """
+    For RoI head scores (B, N, C), return the 95th percentile of the max foreground
+    confidence per image. Useful to track if the head is 'confident enough' on FG.
+    """
+    s = cls_scores
+    if from_logits:
+        s = tf.nn.softmax(s, axis=-1)
+    # foreground = classes 1..C-1
+    fg_probs = s[:, :, 1:]
+    conf = tf.reduce_max(fg_probs, axis=-1)  # (B, N)
+    # per-image p95
+    p95 = tf.map_fn(lambda v: util_percentile(v, 95.0, axis=0), conf, fn_output_signature=conf.dtype)
+    return p95  # shape (B,)
+
+def evaluation_prf1_report(
+    det_boxes_b, det_scores_b, det_labels_b,
+    gt_boxes_b,  gt_labels_b,
+    num_classes,
+    iou_thr=0.5,
+    score_thr=0.0
+):
+
+    db = [np.asarray(x, dtype=float) for x in det_boxes_b]
+    ds = [np.asarray(x, dtype=float) for x in det_scores_b]
+    dl = [np.asarray(x, dtype=int)   for x in det_labels_b]
+    gb = [np.asarray(x, dtype=float) for x in gt_boxes_b]
+    gl = [np.asarray(x, dtype=int)   for x in gt_labels_b]
+
+    B = len(db)
+    report = {c: {"TP":0,"FP":0,"FN":0,"precision":0.0,"recall":0.0,"f1":0.0,"support":0}
+              for c in range(1, num_classes+1)}
+
+    # build per-image GT pools
+    gts = []
+    for b in range(B):
+        pool = {}
+        for c in range(1, num_classes+1):
+            mask = (gl[b] == c)
+            g = gb[b][mask] if gb[b].size else gb[b]
+            pool[c] = {"boxes": g, "matched": np.zeros(len(g), dtype=bool)}
+        gts.append(pool)
+
+    # accumulate detections per class
+    for c in range(1, num_classes+1):
+        dets = []
+        for b in range(B):
+            if len(dl[b]) == 0:
+                continue
+            m = (dl[b] == c)
+            if score_thr > 0:
+                m = m & (ds[b] >= score_thr)
+            idxs = np.where(m)[0]
+            for i in idxs:
+                dets.append((float(ds[b][i]), b, db[b][i].astype(float)))
+        dets.sort(key=lambda t: -t[0])
+
+        tp=fp=0
+        support = sum(len(gts[b][c]["boxes"]) for b in range(B))
+        for score, b, box in dets:
+            gt_boxes = gts[b][c]["boxes"]
+            if len(gt_boxes) == 0:
+                fp += 1; continue
+            ious = iou_xyxy(box, gt_boxes)  # your IoU helper
+            j = int(np.argmax(ious))
+            if ious[j] >= iou_thr and not gts[b][c]["matched"][j]:
+                tp += 1; gts[b][c]["matched"][j] = True
+            else:
+                fp += 1
+
+        fn = sum(int((~gts[b][c]["matched"]).sum()) for b in range(B))
+        prec = tp/(tp+fp+1e-9); rec = tp/(support+1e-9)
+        f1   = (2*prec*rec)/(prec+rec+1e-9)
+        report[c] = {"TP":tp,"FP":fp,"FN":fn,
+                     "precision":float(prec),"recall":float(rec),
+                     "f1":float(f1),"support":int(support)}
+    return report
+
+def evaluation_pr_curve_single_class(
+    c,
+    det_boxes_b, det_scores_b, det_labels_b,
+    gt_boxes_b,  gt_labels_b,
+    iou_thr=0.5
+):
+    """
+    Returns (rec, prec, scores_sorted) arrays for class c in 1..C.
+    """
+    db = np.asarray(det_boxes_b); ds = np.asarray(det_scores_b); dl = np.asarray(det_labels_b)
+    gb = np.asarray(gt_boxes_b);  gl = np.asarray(gt_labels_b)
+    B  = db.shape[0]
+
+    # GT pool for class c
+    gts = {b: {"boxes": gb[b][gl[b]==c].astype(float), "matched": np.zeros(np.sum(gl[b]==c), dtype=bool)}
+           for b in range(B)}
+    npos = int(sum(len(gts[b]["boxes"]) for b in range(B)))
+
+    dets = []
+    for b in range(B):
+        mask = (dl[b]==c)
+        for i in np.where(mask)[0]:
+            dets.append((float(ds[b, i]), b, db[b, i].astype(float)))
+    if len(dets)==0 or npos==0:
+        return np.array([0.]), np.array([0.]), np.array([])
+
+    dets.sort(key=lambda t: -t[0])
+    tp = np.zeros(len(dets)); fp = np.zeros(len(dets)); scores = np.array([d[0] for d in dets])
+
+    for i, (_, b, box) in enumerate(dets):
+        gt_boxes = gts[b]["boxes"]
+        if gt_boxes.shape[0] == 0:
+            fp[i] = 1.0; continue
+        ious = iou_xyxy(box, gt_boxes)
+        j = int(np.argmax(ious))
+        if ious[j] >= iou_thr and not gts[b]["matched"][j]:
+            tp[i] = 1.0; gts[b]["matched"][j] = True
+        else:
+            fp[i] = 1.0
+
+    tp_c = np.cumsum(tp); fp_c = np.cumsum(fp)
+    rec  = tp_c / (npos + 1e-9)
+    prec = tp_c / (tp_c + fp_c + 1e-9)
+    return rec, prec, scores
+
+
+def evaluation_ece_from_logits(roi_labels, classification_head, n_bins=15):
+    """
+    Expected Calibration Error for RoI head.
+    roi_labels: (B, N) with -1 ignored, 0=BG, 1..C-1=FG classes
+    classification_head: (B, N, C) logits
+    """
+    labels = tf.convert_to_tensor(roi_labels)
+    logits = tf.convert_to_tensor(classification_head)
+    mask = labels != -1
+    if not tf.reduce_any(mask):
+        return tf.constant(0.0, tf.float32)
+
+    y = tf.boolean_mask(labels, mask)          # (M,)
+    p = tf.nn.softmax(tf.boolean_mask(logits, mask), axis=-1)  # (M, C)
+    conf = tf.reduce_max(p, axis=-1)           # (M,)
+    pred = tf.argmax(p, axis=-1, output_type=y.dtype)
+
+    correct = tf.cast(tf.equal(pred, y), tf.float32)
+    # binning
+    bins = tf.linspace(0.0, 1.0, n_bins+1)
+    ece  = tf.constant(0.0, tf.float32)
+    m = tf.cast(tf.shape(conf)[0], tf.float32)
+    for i in range(n_bins):
+        lo, hi = bins[i], bins[i+1]
+        sel = tf.where((conf > lo) & (conf <= hi))[:,0]
+        if tf.size(sel) == 0: 
+            continue
+        conf_bin = tf.gather(conf, sel)
+        corr_bin = tf.gather(correct, sel)
+        gap = tf.abs(tf.reduce_mean(conf_bin) - tf.reduce_mean(corr_bin))
+        ece += (tf.cast(tf.size(sel), tf.float32)/m) * gap
+    return ece
+
+
+def evaluation_map_by_area(
+    det_boxes_b, det_scores_b, det_labels_b,
+    gt_boxes_b,  gt_labels_b,
+    num_classes,
+    iou_thr=0.5,
+    area_bins=((0, 32*32), (32*32, 96*96), (96*96, 10**9))
+):
+    """
+    Computes mAP separately for GT size buckets. Returns dict: {'small':..., 'medium':..., 'large':...}
+    """
+    def area(boxes):
+        w = np.maximum(0.0, boxes[:,2]-boxes[:,0])
+        h = np.maximum(0.0, boxes[:,3]-boxes[:,1])
+        return w*h
+
+    names = ["small","medium","large"][:len(area_bins)]
+    results = {}
+    for (lo, hi), name in zip(area_bins, names):
+        # mask GT by area; keep detections as-is
+        gt_boxes_f, gt_labels_f = [], []
+        det_boxes_f, det_scores_f, det_labels_f = [], [], []
+        for b in range(len(gt_boxes_b)):
+            a = area(np.asarray(gt_boxes_b[b]))
+            gm = (a >= lo) & (a < hi)
+            gt_boxes_f.append(np.asarray(gt_boxes_b[b])[gm])
+            gt_labels_f.append(np.asarray(gt_labels_b[b])[gm])
+            det_boxes_f.append(np.asarray(det_boxes_b[b]))
+            det_scores_f.append(np.asarray(det_scores_b[b]))
+            det_labels_f.append(np.asarray(det_labels_b[b]))
+        mAP_bucket, _ = compute_map_voc(
+            det_boxes_f, det_scores_f, det_labels_f,
+            gt_boxes_f,  gt_labels_f,
+            num_classes=num_classes, iou_thr=iou_thr, use_11pt=False
+        )
+        results[name] = float(mAP_bucket)
+    return results
+
+
+def evaluation_sanity_checks(
+    det_boxes_b, det_scores_b, det_labels_b,
+    gt_boxes_b,  gt_labels_b
+):
+    """
+    Quick integrity checks; returns dict with booleans and counts.
+    """
+    db = np.asarray(det_boxes_b); ds = np.asarray(det_scores_b); dl = np.asarray(det_labels_b)
+    gb = np.asarray(gt_boxes_b);  gl = np.asarray(gt_labels_b)
+
+    def bad_boxes(x):
+        x = x.reshape(-1, 4)
+        return np.sum((x[:,2] <= x[:,0]) | (x[:,3] <= x[:,1]) | np.isnan(x).any(axis=1) | np.isinf(x).any(axis=1))
+
+    return {
+        "det_bad_boxes": int(bad_boxes(db)),
+        "gt_bad_boxes" : int(bad_boxes(gb)),
+        "det_nan_scores": int(np.isnan(ds).sum()),
+        "det_inf_scores": int(np.isinf(ds).sum()),
+        "det_neg_scores": int((ds < 0).sum()),
+        "det_label_out_of_range": int(((dl < 0) | (dl != np.floor(dl))).sum()),
+        "gt_label_out_of_range" : int(((gl < 0) | (gl != np.floor(gl))).sum()),
+    }
+
+def bias_init_for_prior(pi=0.01):
+    return tf.keras.initializers.Constant(-math.log((1 - pi) / pi))
