@@ -33,6 +33,20 @@ This implementation is ideal for:
 
 ---
 
+## Process Diagrams
+
+This is the overall pipeline for the Faster RCNN model
+<p align="center"> <img src="Flowchart-Overall Pipeline.png" alt="Overall Process Diagram"/></p>
+
+This is the training pipeline for the Faster RCNN model
+
+<p align="center"> <img src="Flowchart-Training Pipeline.png" alt="Training Process Diagram"/></p>
+
+This is the inference pipeline for the Faster RCNN model
+
+<p align="center"> <img src="Flowchart-Inference Pipeline.png" alt="Inference Process Diagram"/></p>
+---
+
 ## Repository Structure
 
 ```
