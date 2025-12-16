@@ -20,18 +20,22 @@ This implementation is ideal for:
 
 ---
 
-## Table of Contents
- - Overview — Project scope and objectives
- - Key Features — Core capabilities and design highlights
- - Repository Structure — Organization of source files and modules
- - Model Overview — Faster R-CNN architecture and components
- - Installation — Environment setup and dependencies
- - Dataset — Data loading, preprocessing, and formats
- - Training — Model initialization and training workflow
- - Validation — Evaluation procedure and metric reporting
- - Results & Metrics — Quantitative and qualitative performance
- - Architecture Diagrams — End-to-end, training, and inference flows
- - Notes & License — Design considerations and usage terms
+## Legend
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Repository Structure](#repository-structure)
+- [Model Overview](#model-overview)
+- [Installation](#installation)
+- [Dataset](#dataset-pascal-voc-2012)
+- [Training](#training-example)
+- [Validation](#validation)
+- [Metrics](#metrics)
+- [Detection Results](#detection-results)
+- [Architecture Diagrams](#architecture-diagrams)
+- [Notes](#notes)
+- [License](#license)
+
 ---
 ## Key Features
 
