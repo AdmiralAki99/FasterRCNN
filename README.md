@@ -5,7 +5,7 @@ This repository emphasizes **readability**, **reproducibility**, and **research 
 
 ---
 
-## 📘 Overview
+## Overview
 
 This project implements the **Faster R-CNN** object detection architecture with a **VGG-16 backbone** and modular TensorFlow/Keras components for:
 - Region Proposal Network (RPN)
@@ -20,7 +20,7 @@ This implementation is ideal for:
 
 ---
 
-## ⚙️ Key Features
+## Key Features
 
 - **Pure TensorFlow/Keras implementation** — no external detection frameworks
 - **VGG-16 backbone** without fully connected layers
@@ -33,7 +33,7 @@ This implementation is ideal for:
 
 ---
 
-## 🧩 Repository Structure
+## Repository Structure
 
 ```
 .
@@ -51,7 +51,7 @@ This implementation is ideal for:
 
 ---
 
-## 🧠 Model Overview
+## Model Overview
 
 ### 1. `VGG_16_NFCL`
 Feature extractor backbone using VGG-16 (no fully connected layers).
@@ -70,7 +70,7 @@ Combines backbone, RPN, and RoI Head into an end-to-end detector with:
 
 ---
 
-## 🧰 Installation
+## Installation
 
 ```bash
 git clone https://github.com/<your-username>/FasterRCNN-Research.git
@@ -80,7 +80,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 🗂️ Dataset: Pascal VOC 2012
+## Dataset: Pascal VOC 2012
 Custom loader built on **TensorFlow Datasets** with preprocessing for Faster R-CNN.
 
 ```
@@ -104,7 +104,7 @@ Each dataset element contains:
 }
 ```
 
-## 🚀 Training Example
+## Training Example
 ```
 from model import FasterRCNN
 from dataset import load_pascal_voc_dataset
@@ -122,7 +122,7 @@ scheduler = CustomStepBasedScheduler(
     minimum_learning_rate=1e-5
 )
 ```
-## 🧪 Validation
+## Validation
 Use the flexible validation script:
 
 ```
@@ -143,7 +143,7 @@ Outputs:
 * `per_class_prf1.csv` — precision, recall, F1 per class
 * IoU statistics and inference timings (printed to console)
 
-## 📊 Example Validation Output
+## Example Validation Output
 
 ```
 ==== Validation Summary ====
@@ -161,7 +161,7 @@ Top-5 classes by F1:
 
 ```
 
-## 🧮 Custom Learning Rate Scheduler
+## Custom Learning Rate Scheduler
 Implements warmup, hold, and cosine decay phases.
 
 ```
@@ -177,19 +177,19 @@ lr = CustomStepBasedScheduler(
 )
 ```
 
-## 📈 Visualizing Dataset
+## Visualizing Dataset
 ```
 from dataset import load_pascal_voc_dataset, show_dataset_examples
 _, val_ds, _ = load_pascal_voc_dataset(batch_size=2)
 show_dataset_examples(val_ds.unbatch().take(5))
 ```
-## 🖼️ Detection Results
+## Detection Results
 
 Below are sample detections produced by the trained Faster R-CNN model.
 
 <p align="center"> <img src="detection_sample1.png" width="45%" alt="Detection Example 1"/></p>
 
-## 📚 Metrics
+## Metrics
 
 | Metric                      | Description                              |
 | --------------------------- | ---------------------------------------- |
@@ -198,14 +198,14 @@ Below are sample detections produced by the trained Faster R-CNN model.
 | **IoU Probes**              | Median/90th percentile IoU overlap check |
 | **Throughput**              | Images/sec during validation             |
 
-## 🧩 Notes
+## Notes
 
 * Modular design: swap backbones or heads easily
 * All components are TensorFlow-native (`tf.keras.layers`, `tf.data`)
 * Debug-friendly: tensor shapes and IoU checks logged
 * Scripts support both ad-hoc validation and reproducible runs
 
-## 🪪 License
+## License
 
 MIT License © 2025 Akhilesh Warty
 Feel free to use and modify with proper attribution.
