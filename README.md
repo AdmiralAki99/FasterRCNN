@@ -20,6 +20,19 @@ This implementation is ideal for:
 
 ---
 
+## Table of Contents
+ - Overview — Project scope and objectives
+ - Key Features — Core capabilities and design highlights
+ - Repository Structure — Organization of source files and modules
+ - Model Overview — Faster R-CNN architecture and components
+ - Installation — Environment setup and dependencies
+ - Dataset — Data loading, preprocessing, and formats
+ - Training — Model initialization and training workflow
+ - Validation — Evaluation procedure and metric reporting
+ - Results & Metrics — Quantitative and qualitative performance
+ - Architecture Diagrams — End-to-end, training, and inference flows
+ - Notes & License — Design considerations and usage terms
+---
 ## Key Features
 
 - **Pure TensorFlow/Keras implementation** — no external detection frameworks
@@ -31,20 +44,6 @@ This implementation is ideal for:
 - **Automatic metric evaluation:** mAP (VOC), Precision, Recall, F1
 - **Exportable validation summaries** (CSV + JSON)
 
----
-
-## Process Diagrams
-
-This is the overall pipeline for the Faster RCNN model
-<p align="center"> <img src="Flowchart-Overall Pipeline.png" alt="Overall Process Diagram"/></p>
-
-This is the training pipeline for the Faster RCNN model
-
-<p align="center"> <img src="Flowchart-Training Pipeline.png" alt="Training Process Diagram"/></p>
-
-This is the inference pipeline for the Faster RCNN model
-
-<p align="center"> <img src="Flowchart-Inference Pipeline.png" alt="Inference Process Diagram"/></p>
 ---
 
 ## Repository Structure
@@ -218,6 +217,20 @@ Below are sample detections produced by the trained Faster R-CNN model.
 * All components are TensorFlow-native (`tf.keras.layers`, `tf.data`)
 * Debug-friendly: tensor shapes and IoU checks logged
 * Scripts support both ad-hoc validation and reproducible runs
+
+## Architecture Diagrams
+
+This is the overall pipeline for the Faster RCNN model
+<p align="center"> <img src="Flowchart-Overall Pipeline.png" alt="Overall Process Diagram"/></p>
+
+This is the training pipeline for the Faster RCNN model
+
+<p align="center"> <img src="Flowchart-Training Pipeline.png" alt="Training Process Diagram"/></p>
+
+This is the inference pipeline for the Faster RCNN model
+
+<p align="center"> <img src="Flowchart-Inference Pipeline.png" alt="Inference Process Diagram"/></p>
+---
 
 ## License
 
