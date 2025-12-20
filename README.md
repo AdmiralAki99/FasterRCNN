@@ -90,7 +90,7 @@ Combines backbone, RPN, and RoI Head into an end-to-end detector with:
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/FasterRCNN-Research.git
+git clone https://github.com/AdmiralAki99/FasterRCNN-Research.git
 cd FasterRCNN-Research
 python -m venv .venv
 source .venv/bin/activate
